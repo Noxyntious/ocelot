@@ -7,3 +7,4 @@ edition = "2024"
 eframe = "0.37.0"
 ferinth = "2.13.1"
 reqwest = { version = "0.13.5", features = ["blocking"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "fs", "io-util"] }

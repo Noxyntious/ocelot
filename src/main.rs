@@ -1,7 +1,14 @@
 use eframe::egui;
+use ferinth::Ferinth;
+use std::sync::{Arc, Mutex};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 3 {
+        println!("Usage: ocelot <ocelot pack url> <minecraft instance path>");
+        std::process::exit(1);
+    }
 
     let ocpack_url = args[1].clone();
     let minecraft_instance_path = args[2].clone();
@@ -28,28 +35,82 @@ fn main() {
     let _ = eframe::run_native(
         &format!("Ocelot v{}", env!("CARGO_PKG_VERSION")),
         options,
-        Box::new(|_creation_context| Ok(Box::<OcelotApp>::default())),
+        Box::new(move |cc| {
+            let state = Arc::new(Mutex::new(OcelotState::default()));
+            let ctx = cc.egui_ctx.clone();
+            let worker_state = state.clone();
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(run(ocpack_url, minecraft_instance_path, worker_state, ctx));
+            });
+
+            Ok(Box::new(OcelotApp { state }))
+        }),
     );
-
-    let ocpack_text = match reqwest::blocking::get(&ocpack_url)
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.text())
-    {
-        Ok(text) => text,
-        Err(err) => {
-            println!("Failed to download ocpack from {ocpack_url}: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    println!("{:?}", parse_ocpack(&ocpack_text));
 }
 
-struct OcelotApp {
+async fn run(
+    ocpack_url: String,
+    minecraft_instance_path: String,
+    state: Arc<Mutex<OcelotState>>,
+    ctx: egui::Context,
+) {
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        {
+            let mut s = state.lock().unwrap();
+            s.mod_name = "Downloading ocpack".to_owned();
+        }
+        ctx.request_repaint();
+        let ocpack_text = reqwest::get(&ocpack_url)
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let pack = parse_ocpack(&ocpack_text)?;
+        println!("{pack:?}");
+        // add downloads
+        let _ = minecraft_instance_path;
+        let modrinth = Ferinth::<()>::new("ocelot", Some(env!("CARGO_PKG_VERSION")), None);
+        let mods_dir = std::path::Path::new(&minecraft_instance_path).join("mods");
+        tokio::fs::create_dir_all(&mods_dir).await?; // the mods dir might not exist on a new instance
+
+        for (i, entry) in pack.iter().enumerate() {
+            { 
+                let mut s = state.lock().unwrap();
+                s.mod_name = entry.slug.clone();
+                s.mod_progress = 0.0;
+                s.download_progress = i as f32 / pack.len() as f32;
+            }
+            ctx.request_repaint();
+            download_mod(&modrinth, entry, &mods_dir, |p| {
+                state.lock().unwrap().mod_progress = p;
+                ctx.request_repaint();
+            }).await?;
+        }
+        state.lock().unwrap().download_progress = 1.0;
+        Ok(())
+    }.await;
+
+    let mut state = state.lock().unwrap();
+    match result {
+        Ok(()) => state.done = true,
+        Err(err) => state.error = Some(err.to_string()),
+    }
+    ctx.request_repaint();
+}
+
+struct OcelotState {
     main_text: String,
     download_progress: f32,
     mod_name: String,
     mod_progress: f32,
+    done: bool,
+    error: Option<String>,
+}
+
+struct OcelotApp {
+    state: Arc<Mutex<OcelotState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,13 +121,15 @@ struct ModpackEntry {
     required: bool,
 }
 
-impl Default for OcelotApp {
+impl Default for OcelotState {
     fn default() -> Self {
         Self {
             main_text: "Preparing Minecraft".to_owned(),
-            download_progress: 0.65,
-            mod_name: "This Mod".to_owned(),
-            mod_progress: 0.65,
+            download_progress: 0.0,
+            mod_name: "Waiting for thread".to_owned(),
+            mod_progress: 0.0,
+            done: false,
+            error: None,
         }
     }
 }
@@ -74,10 +137,11 @@ impl Default for OcelotApp {
 impl eframe::App for OcelotApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            wavy_text(ui, &self.main_text, 18.0);
+            let state = self.state.lock().unwrap();
+            wavy_text(ui, &state.main_text, 18.0);
             ui.add_space(5.0);
             ui.add(
-                egui::ProgressBar::new(self.download_progress)
+                egui::ProgressBar::new(state.download_progress)
                     .show_percentage()
                     .animate(true),
             );
@@ -86,8 +150,8 @@ impl eframe::App for OcelotApp {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} ({}%)...",
-                        self.mod_name,
-                        (self.mod_progress * 100.0) as i32
+                        state.mod_name,
+                        (state.mod_progress * 100.0) as i32
                     ))
                     .strong(),
                 );
@@ -136,6 +200,52 @@ fn parse_ocpack(text: &str) -> Result<Vec<ModpackEntry>, String> {
             })
         })
         .collect()
+}
+
+async fn download_mod(
+    modrinth: &Ferinth<()>,
+    entry: &ModpackEntry,
+    mods_dir: &std::path::Path,
+    mut on_progress: impl FnMut(f32),
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let versions = modrinth
+        .version_list_filtered(
+            &entry.slug,
+            Some(&[entry.loader.as_str()]),
+            Some(&[entry.version.as_str()]),
+            None,
+        )
+        .await?;
+    let version = versions.first().ok_or(format!(
+        "{} has no {} build for {}",
+        entry.slug, entry.loader, entry.version
+    ))?;
+
+    let file = version
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or(version.files.first())
+        .ok_or("version has no files")?;
+
+    let dest = mods_dir.join(&file.filename);
+    if dest.exists() {
+        on_progress(1.0);
+        return Ok(());
+    }
+
+    let tmp = mods_dir.join(format!("{}.part", file.filename));
+    let mut resp = reqwest::get(file.url.clone()).await?.error_for_status()?;
+    let mut out = tokio::fs::File::create(&tmp).await?;
+    let mut done = 0usize;
+    while let Some(chunk) = resp.chunk().await? {
+        tokio::io::AsyncWriteExt::write_all(&mut out, &chunk).await?;
+        done += chunk.len();
+        on_progress(done as f32 / file.size as f32);
+    }
+    drop(out);
+    tokio::fs::rename(&tmp, &dest).await?;
+    Ok(())
 }
 
 fn wavy_text(ui: &mut egui::Ui, text: &str, size: f32) {

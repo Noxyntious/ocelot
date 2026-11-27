@@ -2638,6 +2638,7 @@ dependencies = [
  "eframe",
  "ferinth",
  "reqwest",
+ "tokio",
 ]
 
 [[package]]
