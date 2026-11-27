@@ -76,7 +76,7 @@ async fn run(
         tokio::fs::create_dir_all(&mods_dir).await?; // the mods dir might not exist on a new instance
 
         for (i, entry) in pack.iter().enumerate() {
-            { 
+            {
                 let mut s = state.lock().unwrap();
                 s.mod_name = entry.slug.clone();
                 s.mod_progress = 0.0;
@@ -86,16 +86,27 @@ async fn run(
             download_mod(&modrinth, entry, &mods_dir, |p| {
                 state.lock().unwrap().mod_progress = p;
                 ctx.request_repaint();
-            }).await?;
+            })
+            .await?;
         }
         state.lock().unwrap().download_progress = 1.0;
         Ok(())
-    }.await;
+    }
+    .await;
 
-    let mut state = state.lock().unwrap();
     match result {
-        Ok(()) => state.done = true,
-        Err(err) => state.error = Some(err.to_string()),
+        Ok(()) => {
+            {
+                let mut s = state.lock().unwrap();
+                s.main_text = "Done!".to_owned();
+                s.mod_name = "Launching Minecraft in 3 seconds".to_owned();
+                s.mod_progress = 1.0;
+            }
+            ctx.request_repaint();
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            state.lock().unwrap().done = true;
+        }
+        Err(err) => state.lock().unwrap().error = Some(err.to_string()),
     }
     ctx.request_repaint();
 }
@@ -168,6 +179,11 @@ impl eframe::App for OcelotApp {
                     }
                 });
             });
+            if state.done {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            } else if let Some(_err) = &state.error {
+                //show error
+            }
         });
     }
 }
