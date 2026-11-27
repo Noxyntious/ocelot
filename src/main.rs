@@ -1,6 +1,21 @@
 use eframe::egui;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    let ocpack_url = args[1].clone();
+    let minecraft_instance_path = args[2].clone();
+
+    if minecraft_instance_path == "" {
+        println!("No minecraft instance path provided, exiting");
+        std::process::exit(1);
+    }
+
+    if ocpack_url == "" {
+        println!("No ocelot pack url provided, exiting");
+        std::process::exit(1);
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([420.0, 95.0])
@@ -15,6 +30,19 @@ fn main() {
         options,
         Box::new(|_creation_context| Ok(Box::<OcelotApp>::default())),
     );
+
+    let ocpack_text = match reqwest::blocking::get(&ocpack_url)
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.text())
+    {
+        Ok(text) => text,
+        Err(err) => {
+            println!("Failed to download ocpack from {ocpack_url}: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    println!("{:?}", parse_ocpack(&ocpack_text));
 }
 
 struct OcelotApp {
@@ -22,6 +50,14 @@ struct OcelotApp {
     download_progress: f32,
     mod_name: String,
     mod_progress: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ModpackEntry {
+    slug: String,
+    version: String,
+    loader: String,
+    required: bool,
 }
 
 impl Default for OcelotApp {
@@ -47,7 +83,14 @@ impl eframe::App for OcelotApp {
             );
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{} ({}%)...", self.mod_name, (self.mod_progress * 100.0) as i32)).strong());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} ({}%)...",
+                        self.mod_name,
+                        (self.mod_progress * 100.0) as i32
+                    ))
+                    .strong(),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Cancel").clicked() {
                         // cancel it
@@ -65,17 +108,34 @@ impl eframe::App for OcelotApp {
     }
 }
 
-pub fn parse_ocpack(ocpack: &str) -> Vec<String> {
-    let mut mods = Vec::new();
-    for line in ocpack.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // something i forgot
-        mods.push(line.to_string());
-    }
-    mods
+fn parse_ocpack(text: &str) -> Result<Vec<ModpackEntry>, String> {
+    text.lines()
+        .enumerate()
+        .skip(1) // the ocpacks header (cause its a csv)
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, line)| {
+            let cols: Vec<&str> = line.split(',').map(str::trim).collect();
+            let [url, version, platform, required] = cols[..] else {
+                return Err(format!(
+                    "line {}: incorrect number of cols: {}",
+                    i + 1,
+                    cols.len()
+                ));
+            };
+            let slug = url
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or(format!("line {}: not a mod url", i + 1))?;
+            Ok(ModpackEntry {
+                slug: slug.to_owned(),
+                version: version.to_owned(),
+                loader: platform.to_owned(),
+                required: required.eq("required"),
+            })
+        })
+        .collect()
 }
 
 fn wavy_text(ui: &mut egui::Ui, text: &str, size: f32) {
