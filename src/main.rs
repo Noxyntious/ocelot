@@ -74,6 +74,14 @@ async fn run(
         let modrinth = Ferinth::<()>::new("ocelot", Some(env!("CARGO_PKG_VERSION")), None);
         let mods_dir = std::path::Path::new(&minecraft_instance_path).join("mods");
         tokio::fs::create_dir_all(&mods_dir).await?; // the mods dir might not exist on a new instance
+        
+        let mut dir = tokio::fs::read_dir(&mods_dir).await?;
+        while let Some(entry) = dir.next_entry().await? { // delete stuck .part files (maybe if ocelot is closed/crashed while downloading)
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "part") {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
 
         for (i, entry) in pack.iter().enumerate() {
             {
@@ -225,17 +233,15 @@ async fn download_mod(
     mut on_progress: impl FnMut(f32),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let versions = modrinth
-        .version_list_filtered(
-            &entry.slug,
-            Some(&[entry.loader.as_str()]),
-            None,
-            None,
-        )
+        .version_list_filtered(&entry.slug, Some(&[entry.loader.as_str()]), None, None)
         .await?;
-    let version = versions.iter().find(|v| v.version_number == entry.version).ok_or(format!(
-        "mod {} has no {} version {}",
-        entry.slug, entry.loader, entry.version
-    ))?;
+    let version = versions
+        .iter()
+        .find(|v| v.version_number == entry.version)
+        .ok_or(format!(
+            "mod {} has no {} version {}",
+            entry.slug, entry.loader, entry.version
+        ))?;
 
     let file = version
         .files
