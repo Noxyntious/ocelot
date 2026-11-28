@@ -228,12 +228,12 @@ async fn download_mod(
         .version_list_filtered(
             &entry.slug,
             Some(&[entry.loader.as_str()]),
-            Some(&[entry.version.as_str()]),
+            None,
             None,
         )
         .await?;
-    let version = versions.first().ok_or(format!(
-        "{} has no {} build for {}",
+    let version = versions.iter().find(|v| v.version_number == entry.version).ok_or(format!(
+        "mod {} has no {} version {}",
         entry.slug, entry.loader, entry.version
     ))?;
 

@@ -13,16 +13,16 @@ mod_url,version,platform,required
 For example:
 
 ```
-https://modrinth.com/mod/fabric-api,26.3,fabric,required
+https://modrinth.com/mod/fabric-api,0.167.0+26.3,fabric,required
 ```
 
 A complete modpack file consumed by Ocelot would look like this:
 ```
 mod_url,version,platform,required
-https://modrinth.com/mod/fabric-api,26.3,fabric,required
-https://modrinth.com/mod/sodium,26.3,fabric,required
-https://modrinth.com/mod/xaeros-minimap,26.3,fabric,optional
-https://modrinth.com/mod/iris,26.3,fabric,optional
+https://modrinth.com/mod/fabric-api,0.167.0+26.3,fabric,required
+https://modrinth.com/mod/sodium,mc26.3-0.9.4-beta.2-fabric,fabric,required
+https://modrinth.com/mod/xaeros-minimap,fabric-26.3-26.6.2,fabric,optional
+https://modrinth.com/mod/iris,1.11.6+26.3-fabric,fabric,optional
 ```
 
 This is essentially just CSV, and as such can be created in any CSV editor, like Excel.
