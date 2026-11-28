@@ -1,0 +1,56 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  asset: ocelot-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: ocelot-linux-aarch64 }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    asset: ocelot-windows-x86_64.exe }
+          - { os: windows-latest,   target: aarch64-pc-windows-msvc,   asset: ocelot-windows-aarch64.exe }
+          - { os: macos-latest,     target: aarch64-apple-darwin,      asset: ocelot-macos-aarch64 }
+          - { os: macos-latest,     target: x86_64-apple-darwin,       asset: ocelot-macos-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Rename
+        shell: bash
+        run: |
+          src=target/${{ matrix.target }}/release/ocelot
+          [[ "${{ matrix.target }}" == *windows* ]] && src="$src.exe"
+          cp "$src" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*
